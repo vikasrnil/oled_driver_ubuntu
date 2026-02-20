@@ -48,20 +48,26 @@ uint8_t _i2c_close()
 
 uint8_t _i2c_write(uint8_t* ptr, int16_t len)
 {
-	if (file_i2c == 0 || ptr == 0 || len <= 0)
+	if (file_i2c < 0 || ptr == NULL || len <= 0)
 		return 1;
 
-	write(file_i2c, ptr, len);
+	ssize_t ret = write(file_i2c, ptr, len);
+
+	if (ret != len)
+		return 1;
 
 	return 0;
 }
 
 uint8_t _i2c_read(uint8_t *ptr, int16_t len)
 {
-	if (file_i2c == 0 || ptr == 0 || len <= 0)
+	if (file_i2c < 0 || ptr == NULL || len <= 0)
 		return 1;
 
-	read(file_i2c, ptr, len);
+	ssize_t ret = read(file_i2c, ptr, len);
+
+	if (ret != len)
+		return 1;
 
 	return 0;
 }
