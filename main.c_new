@@ -1,0 +1,45 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <unistd.h>
+
+#include "i2c.h"
+#include "ssd1306.h"
+
+int main()
+{
+    /* Initialize I2C */
+    if (_i2c_init(SSD1306_I2C_ADDR) != 0)
+    {
+        printf("I2C initialization failed!\n");
+        return -1;
+    }
+
+    printf("I2C initialized successfully.\n");
+
+    /* Initialize OLED */
+    if (ssd1306_oled_init() != 0)
+    {
+        printf("OLED initialization failed!\n");
+        return -1;
+    }
+
+    /* Clear display */
+    ssd1306_oled_clear_screen();
+
+    /* Set cursor to top-left */
+    ssd1306_oled_set_XY(0, 0);
+
+    /* Write text (auto wrapping enabled in driver) */
+    ssd1306_oled_write_string(SSD1306_FONT_SMALL,
+        (char*)"Hello my name is Escorts Kubota Limited\n"
+               "I am from India\n"
+               "SSD1306 auto wrap working!\n");
+
+    /* Keep program alive */
+    while (1)
+    {
+        sleep(1);
+    }
+
+    return 0;
+}
