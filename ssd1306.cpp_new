@@ -1,1 +1,255 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
 
+#include "i2c.h"
+#include "ssd1306.h"
+#include "font.h"
+
+/* ================= INTERNAL STATE ================= */
+
+static uint8_t data_buf[1024];
+
+static uint8_t max_lines   = SSD1306_128_64_LINES;     // 64 pixels
+static uint8_t max_columns = SSD1306_128_64_COLUMNS;   // 128 pixels
+
+static uint8_t global_x = 0;   // column (0–127)
+static uint8_t global_y = 0;   // page (0–7)
+
+/* ================================================== */
+/* ================= LOW LEVEL ====================== */
+/* ================================================== */
+
+void oled_cmd(uint8_t cmd)
+{
+    uint8_t buf[2] = { SSD1306_COMM_CONTROL_BYTE, cmd };
+    _i2c_write(buf, 2);
+}
+
+void oled_data(uint8_t data)
+{
+    uint8_t buf[2] = { SSD1306_DATA_CONTROL_BYTE, data };
+    _i2c_write(buf, 2);
+}
+
+/* ================================================== */
+/* ================= INITIALIZATION ================= */
+/* ================================================== */
+
+int ssd1306_oled_init()
+{
+    sleep(1);
+
+    oled_cmd(SSD1306_COMM_DISPLAY_OFF);
+    oled_cmd(SSD1306_COMM_CLK_SET);        oled_cmd(0x80);
+    oled_cmd(SSD1306_COMM_MULTIPLEX);      oled_cmd(0x3F);
+    oled_cmd(SSD1306_COMM_VERT_OFFSET);    oled_cmd(0x00);
+    oled_cmd(SSD1306_COMM_START_LINE | 0x00);
+    oled_cmd(SSD1306_COMM_CHARGE_PUMP);    oled_cmd(0x14);
+    oled_cmd(SSD1306_COMM_MEMORY_MODE);    oled_cmd(SSD1306_PAGE_MODE);
+    oled_cmd(SSD1306_COMM_HORIZ_FLIP);
+    oled_cmd(SSD1306_COMM_SCAN_REVS);
+    oled_cmd(SSD1306_COMM_COM_PIN);        oled_cmd(0x12);
+    oled_cmd(SSD1306_COMM_CONTRAST);       oled_cmd(0x7F);
+    oled_cmd(SSD1306_COMM_PRECHARGE);      oled_cmd(0xF1);
+    oled_cmd(SSD1306_COMM_DESELECT_LV);    oled_cmd(0x40);
+    oled_cmd(SSD1306_COMM_RESUME_RAM);
+    oled_cmd(SSD1306_COMM_DISP_NORM);
+    oled_cmd(SSD1306_COMM_DISABLE_SCROLL);
+    oled_cmd(SSD1306_COMM_DISPLAY_ON);
+
+    global_x = 0;
+    global_y = 0;
+
+    return 0;
+}
+
+/* ================================================== */
+/* ================= CURSOR CONTROL ================= */
+/* ================================================== */
+
+uint8_t ssd1306_oled_set_XY(uint8_t x, uint8_t y)
+{
+    if (x >= max_columns || y >= (max_lines / 8))
+        return 1;
+
+    global_x = x;
+    global_y = y;
+
+    data_buf[0] = SSD1306_COMM_CONTROL_BYTE;
+    data_buf[1] = SSD1306_COMM_PAGE_NUMBER | y;
+    data_buf[2] = SSD1306_COMM_LOW_COLUMN | (x & 0x0F);
+    data_buf[3] = SSD1306_COMM_HIGH_COLUMN | ((x >> 4) & 0x0F);
+
+    return _i2c_write(data_buf, 4);
+}
+
+static void ssd1306_oled_nextline()
+{
+    global_x = 0;
+    global_y++;
+
+    if (global_y >= (max_lines / 8))
+    {
+        // Screen full → clear and restart
+        ssd1306_oled_clear_screen();
+        global_y = 0;
+    }
+
+    ssd1306_oled_set_XY(global_x, global_y);
+}
+
+/* ================================================== */
+/* ================= CLEAR FUNCTIONS ================ */
+/* ================================================== */
+
+uint8_t ssd1306_oled_clear_line(uint8_t row)
+{
+    if (row >= (max_lines / 8))
+        return 1;
+
+    ssd1306_oled_set_XY(0, row);
+
+    data_buf[0] = SSD1306_DATA_CONTROL_BYTE;
+
+    for (uint8_t i = 0; i < max_columns; i++)
+        data_buf[i + 1] = 0x00;
+
+    return _i2c_write(data_buf, 1 + max_columns);
+}
+
+uint8_t ssd1306_oled_clear_screen()
+{
+    uint8_t rc = 0;
+
+    for (uint8_t i = 0; i < (max_lines / 8); i++)
+        rc |= ssd1306_oled_clear_line(i);
+
+    global_x = 0;
+    global_y = 0;
+    ssd1306_oled_set_XY(0, 0);
+
+    return rc;
+}
+
+/* ================================================== */
+/* ================= TEXT FUNCTIONS ================= */
+/* ================================================== */
+
+static void ssd1306_oled_write_char(uint8_t size, char c)
+{
+    uint8_t* font_table = NULL;
+    uint8_t font_width = 0;
+
+    if (size == SSD1306_FONT_SMALL)
+    {
+        font_table = (uint8_t*)font5x7;
+        font_width = 5;
+    }
+    else if (size == SSD1306_FONT_NORMAL)
+    {
+        font_table = (uint8_t*)font8x8;
+        font_width = 8;
+    }
+    else
+        return;
+
+    if (c == '\n')
+    {
+        ssd1306_oled_nextline();
+        return;
+    }
+
+    if (c < 0x20 || c > 0x7E)
+        c = '?';
+
+    if (global_x + font_width >= max_columns)
+        ssd1306_oled_nextline();
+
+    uint8_t temp[1 + 8];
+    uint8_t i = 0;
+
+    temp[i++] = SSD1306_DATA_CONTROL_BYTE;
+
+    uint8_t* font_ptr = &font_table[(c - 0x20) * font_width];
+
+    for (uint8_t j = 0; j < font_width; j++)
+    {
+        temp[i++] = font_ptr[j];
+        global_x++;
+    }
+
+    _i2c_write(temp, i);
+    ssd1306_oled_set_XY(global_x, global_y);
+}
+
+void ssd1306_oled_putc(uint8_t size, unsigned char c)
+{
+    ssd1306_oled_write_char(size, c);
+}
+
+void ssd1306_oled_puts(uint8_t size, char* str)
+{
+    if (!str) return;
+
+    while (*str)
+        ssd1306_oled_write_char(size, *str++);
+}
+
+/* ================================================== */
+/* ========== FAST STRING WRITE (AUTO WRAP) ========= */
+/* ================================================== */
+
+uint8_t ssd1306_oled_write_string(uint8_t size, char* str)
+{
+    if (!str)
+        return 1;
+
+    while (*str)
+    {
+        ssd1306_oled_write_char(size, *str++);
+    }
+
+    return 0;
+}
+
+/* ================================================== */
+/* ================= OTHER CONTROL ================== */
+/* ================================================== */
+
+uint8_t ssd1306_oled_onoff(uint8_t onoff)
+{
+    oled_cmd(onoff ? SSD1306_COMM_DISPLAY_ON :
+                     SSD1306_COMM_DISPLAY_OFF);
+    return 0;
+}
+
+uint8_t ssd1306_oled_set_contrast(uint8_t value)
+{
+    oled_cmd(SSD1306_COMM_CONTRAST);
+    oled_cmd(value);
+    return 0;
+}
+
+uint8_t ssd1306_oled_display_flip(uint8_t flip)
+{
+    oled_cmd(flip ? SSD1306_COMM_DISP_INVERSE :
+                    SSD1306_COMM_DISP_NORM);
+    return 0;
+}
+
+uint8_t ssd1306_oled_horizontal_flip(uint8_t flip)
+{
+    oled_cmd(flip ? SSD1306_COMM_HORIZ_FLIP :
+                    SSD1306_COMM_HORIZ_NORM);
+    return 0;
+}
+
+uint8_t ssd1306_oled_scroll_onoff(uint8_t onoff)
+{
+    oled_cmd(onoff ? SSD1306_COMM_ENABLE_SCROLL :
+                     SSD1306_COMM_DISABLE_SCROLL);
+    return 0;
+}
